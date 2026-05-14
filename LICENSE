@@ -1,0 +1,16 @@
+Business Source License 1.1
+
+Licensor:             KVM Fleet
+Licensed Work:        kvmfleet-verify, the contents of this directory
+Additional Use Grant: You may use the Licensed Work to verify the
+                      integrity of audit logs you have lawful access
+                      to. You may not resell, host, or rebrand the
+                      Licensed Work as a commercial offering.
+Change Date:          Four years from the date of each Licensed Work
+                      release.
+Change License:       Apache License, Version 2.0
+
+The full text of the Business Source License 1.1 is available at:
+https://mariadb.com/bsl11/
+
+For commercial licensing inquiries, contact hello@kvmfleet.io.
