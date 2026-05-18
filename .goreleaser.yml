@@ -1,0 +1,69 @@
+# GoReleaser config for kvmfleet-verify — the offline audit-chain
+# verifier. Same shape as the agent but a broader arch matrix because
+# operators run this on their own laptops (macOS + Windows alongside
+# Linux). Cosign keyless signs the checksum manifest.
+
+version: 2
+
+project_name: kvmfleet-verify
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: kvmfleet-verify
+    main: ./
+    binary: kvmfleet-verify
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+      - -buildvcs=false
+    ldflags:
+      - -s -w -X main.version={{ .Version }}
+    mod_timestamp: "{{ .CommitTimestamp }}"
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+
+archives:
+  - id: kvmfleet-verify
+    format: binary
+    name_template: kvmfleet-verify.{{ .Os }}-{{ .Arch }}{{ if eq .Os "windows" }}.exe{{ end }}
+
+checksum:
+  name_template: "checksums.txt"
+  algorithm: sha256
+
+signs:
+  - cmd: cosign
+    signature: "${artifact}.sig"
+    certificate: "${artifact}.pem"
+    args:
+      - "sign-blob"
+      - "--yes"
+      - "--oidc-issuer=https://token.actions.githubusercontent.com"
+      - "--output-certificate=${certificate}"
+      - "--output-signature=${signature}"
+      - "${artifact}"
+    artifacts: checksum
+    output: true
+
+release:
+  draft: false
+  github:
+    owner: KVMFleet
+    name: audit-verify
+
+changelog:
+  use: github
+  filters:
+    exclude:
+      - "^docs:"
+      - "^ci:"
+      - "^chore:"
