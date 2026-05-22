@@ -1,5 +1,11 @@
 # kvmfleet-verify
 
+> Canonical home: <https://github.com/KVMFleet/audit-verify>
+>
+> This directory mirrors the source kept inside the main KVM Fleet
+> repository. Both trees are kept byte-identical; the public repo is
+> the version released to customers.
+
 Offline verifier for the KVM Fleet audit chain.
 
 `kvmfleet-verify` re-walks the SHA-256 hash chain over an NDJSON export
@@ -56,18 +62,53 @@ content or whose `prev_hash` doesn't match the prior row.
 
 - That the platform recorded **every** action it should have. The
   verifier checks integrity of what's in the export, not completeness.
-  An attacker with database-superuser access *and* the ability to
-  silently re-hash subsequent rows could in theory truncate the tail
-  — though they'd have to do so before any external party (you,
-  another verifier copy, your SIEM via the audit-webhook stream)
-  captured a snapshot. Tamper-evidence is only as strong as the
-  freshness of your last external attestation.
 - That a forward-looking event hasn't yet been added; the verifier
   walks what you give it.
 
-The "customer-owned audit signing keys" feature on the KVM Fleet
-roadmap (Phase 3, trigger-driven) closes the residual gap by signing
-every event with a key the platform doesn't hold.
+## External-witness mode: catching a platform-side rewrite
+
+A determined attacker with control of the platform's database can
+delete `audit_events` rows and re-insert from any anchor forward,
+producing a self-consistent (but rewritten) chain. Vanilla hash-
+chaining alone doesn't catch this — the verifier would still print
+`OK`.
+
+The platform mitigates this by periodically publishing
+`audit.chain.anchor` events through your configured audit-webhook
+SIEM stream (Splunk / Datadog / ELK / etc.). The customer's SIEM
+archives these payloads out-of-band — beyond the attacker's reach.
+Each anchor payload contains the `chain_head_at_anchor` (a 64-char
+hex value).
+
+Use `--check-against-anchor` to compare the recomputed chain head
+against an archived anchor:
+
+```bash
+# Pull the most recent chain_head_at_anchor from your SIEM
+# (Splunk / Datadog / ELK / wherever you ingest audit webhooks).
+ANCHOR=$(...)
+
+# Export the NDJSON covering the period from your last verified
+# anchor up to and including the anchor you're checking against.
+curl -H 'Authorization: Bearer <token>' \
+  'https://app.kvmfleet.io/v1/audit/events.ndjson?to_time=<anchor-timestamp>' \
+  -o audit.ndjson
+
+# Verify: chain integrity AND that the final head matches the anchor.
+kvmfleet-verify --input audit.ndjson --check-against-anchor "$ANCHOR"
+```
+
+If the verifier prints `TAMPER DETECTED: chain head does not match
+the archived anchor.`, the audit chain has been rewritten since the
+anchor was published. Escalate to KVM Fleet incident response and to
+your own auditor. **This is the externally-witnessed integrity check
+that vanilla hash-chaining cannot provide on its own.**
+
+The forthcoming **customer-owned audit signing keys** feature (KVM
+Fleet roadmap Phase 3, trigger-driven) closes the residual gap further
+by signing every event with a key the platform doesn't hold — so even
+a fully-compromised platform cannot forge new events that verify
+against your key.
 
 ## Build
 

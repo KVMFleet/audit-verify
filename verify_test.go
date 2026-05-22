@@ -212,3 +212,24 @@ func TestVerify_EmptyInputIsOK(t *testing.T) {
 		t.Errorf("expected 0 events, got %d", res.Checked)
 	}
 }
+
+
+// --- --check-against-anchor regression coverage --------------------------
+
+func TestVerify_FinalChainHeadIsTheLastRowHash(t *testing.T) {
+	// The main verifier already reports the chain head; this just locks
+	// the contract --check-against-anchor depends on (the CLI compares
+	// res.ChainHead to the user-supplied expected hex).
+	var anchor [32]byte
+	ndjson := buildChain(t, anchor, sampleEvents())
+	res, err := Verify(strings.NewReader(ndjson), anchor)
+	if err != nil {
+		t.Fatalf("Verify: %v", err)
+	}
+	if !res.OK {
+		t.Fatalf("expected OK, got: %s", res.Message)
+	}
+	if len(res.ChainHead) != 64 {
+		t.Errorf("expected 64 hex chars in chain head, got %q", res.ChainHead)
+	}
+}
