@@ -36,6 +36,14 @@ type VerifyResult struct {
 	FirstBreakID int64  // 0 if OK
 	Message      string // human-readable
 	ChainHead    string // hex of the final row_hash (only meaningful when OK)
+
+	// Every chain_head reached during the walk (each row's row_hash,
+	// in hex). Populated even on a broken chain so callers can still
+	// reason about the prefix they got through. Used by
+	// VerifySignedAnchors to assert a signed anchor's head appeared
+	// in the chain — proves the chain hasn't been rewritten since
+	// the customer's signer committed to that head.
+	WalkedHeads map[string]bool
 }
 
 // Verify walks an NDJSON stream, recomputing each event's row_hash from
@@ -47,6 +55,7 @@ type VerifyResult struct {
 func Verify(r io.Reader, anchor [32]byte) (VerifyResult, error) {
 	prev := anchor[:]
 	checked := 0
+	walked := make(map[string]bool)
 	sc := bufio.NewScanner(r)
 	// Large enough for any plausibly-sized audit event line (details
 	// is JSONB, can hold sizeable payloads).
@@ -124,6 +133,7 @@ func Verify(r io.Reader, anchor [32]byte) (VerifyResult, error) {
 		}
 
 		prev = gotRowHash
+		walked[hex.EncodeToString(prev)] = true
 		checked++
 	}
 	if err := sc.Err(); err != nil {
@@ -132,8 +142,9 @@ func Verify(r io.Reader, anchor [32]byte) (VerifyResult, error) {
 
 	return VerifyResult{
 		Checked: checked, OK: true,
-		Message:   fmt.Sprintf("OK %d events", checked),
-		ChainHead: hex.EncodeToString(prev),
+		Message:     fmt.Sprintf("OK %d events", checked),
+		ChainHead:   hex.EncodeToString(prev),
+		WalkedHeads: walked,
 	}, nil
 }
 

@@ -104,11 +104,56 @@ anchor was published. Escalate to KVM Fleet incident response and to
 your own auditor. **This is the externally-witnessed integrity check
 that vanilla hash-chaining cannot provide on its own.**
 
-The forthcoming **customer-owned audit signing keys** feature (KVM
-Fleet roadmap Phase 3, trigger-driven) closes the residual gap further
-by signing every event with a key the platform doesn't hold — so even
-a fully-compromised platform cannot forge new events that verify
-against your key.
+## Strongest mode: customer-signed anchors (`--signed-anchors`)
+
+The chain-anchor + `--check-against-anchor` mode above relies on the
+customer's SIEM holding the platform's HMAC-signed anchor payloads.
+That HMAC uses a per-webhook secret the platform also knows; a
+fully-compromised platform could theoretically forge a new
+HMAC-signed payload and pass it off to the SIEM, IF the customer's
+SIEM ingestion didn't already snapshot the original.
+
+The **customer-owned signing keys** feature closes that residual gap.
+The customer uploads an Ed25519 **public** key to KVM Fleet
+(Compliance → Audit-chain signing key). The platform stores ONLY the
+public half. When a chain.anchor event fires, the payload includes
+the SHA-256 fingerprint of this public key — a hint that the
+customer's signer should sign this anchor.
+
+The customer's signer (running on infrastructure the customer
+controls, with the private key NEVER touching the platform):
+
+1. Receives the webhook (or reads it from the SIEM).
+2. Verifies the platform's fingerprint matches the locally-held key.
+3. Signs the raw 32 bytes of `chain_head_at_anchor` with Ed25519.
+4. Archives the `<chain_head_hex>  <signature_hex>` pair.
+
+A reference signer in ~80 lines of Python is at
+`examples/signer.py` (requires `pynacl`).
+
+Verify with both proofs at once:
+
+```bash
+kvmfleet-verify \
+  --input audit.ndjson \
+  --signed-anchors signed-anchors.txt \
+  --customer-pubkey <64-hex public key>
+```
+
+The verifier:
+- Walks the chain (`prev_hash → row_hash` recompute, as before)
+- Verifies every signature against the customer pubkey
+- For each signed anchor, asserts the chain head was reached during
+  the walk
+
+Threat closure: a platform-side attacker can produce a self-consistent
+rewritten chain, but they cannot forge new signatures (they don't
+have the private key) AND any historical chain head referenced by an
+existing signature is now locked in — rewriting the chain to a state
+that doesn't include that head will fail the second check.
+
+This is the strongest cryptographic guarantee `kvmfleet-verify`
+provides today.
 
 ## Build
 

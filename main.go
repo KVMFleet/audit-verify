@@ -23,6 +23,7 @@
 package main
 
 import (
+	"crypto/ed25519"
 	"encoding/hex"
 	"flag"
 	"fmt"
@@ -31,15 +32,17 @@ import (
 	"strings"
 )
 
-const version = "0.2.0-dev"
+const version = "0.3.0-dev"
 
 func main() {
 	var (
-		input       string
-		anchorHex   string
-		expectedHex string
-		quiet       bool
-		showVer     bool
+		input           string
+		anchorHex       string
+		expectedHex     string
+		signedAnchors   string
+		customerPubHex  string
+		quiet           bool
+		showVer         bool
 	)
 	flag.StringVar(&input, "input", "", "Path to NDJSON export (default: stdin)")
 	flag.StringVar(&anchorHex, "anchor", "", "Org's audit_chain_anchor as 64 hex chars (default: 64 zeros)")
@@ -48,6 +51,16 @@ func main() {
 			"\tchain_head_at_anchor from an `audit.chain.anchor` event your SIEM\n"+
 			"\tarchived. Mismatch means the chain has been rewritten since the\n"+
 			"\tanchor was published; the verifier exits non-zero.")
+	flag.StringVar(&signedAnchors, "signed-anchors", "",
+		"Path to a file of customer-signed anchors (one per line:\n"+
+			"\t<chain_head_hex>  <signature_hex>). Each signature is checked\n"+
+			"\tagainst --customer-pubkey AND the chain head must appear in\n"+
+			"\tthe input. Closes the platform-side rewrite attack — a popped\n"+
+			"\tplatform can't reach the customer's private key to forge new\n"+
+			"\tsigned anchors. Requires --customer-pubkey.")
+	flag.StringVar(&customerPubHex, "customer-pubkey", "",
+		"Customer's Ed25519 public key as 64 hex chars (32 raw bytes).\n"+
+			"\tThe other half of --signed-anchors; required when that's set.")
 	flag.BoolVar(&quiet, "quiet", false, "Suppress success output; only print on failure")
 	flag.BoolVar(&showVer, "version", false, "Print version and exit")
 	flag.Usage = func() {
@@ -94,6 +107,22 @@ func main() {
 		}
 	}
 
+	// Signed-anchors mode needs both flags together — fail fast on
+	// partial config rather than verifying half-asked.
+	var customerPubkey ed25519.PublicKey
+	if signedAnchors != "" || customerPubHex != "" {
+		if signedAnchors == "" || customerPubHex == "" {
+			fmt.Fprintln(os.Stderr, "kvmfleet-verify: --signed-anchors and --customer-pubkey must be used together")
+			os.Exit(1)
+		}
+		pk, err := hex.DecodeString(strings.ToLower(strings.TrimSpace(customerPubHex)))
+		if err != nil || len(pk) != ed25519.PublicKeySize {
+			fmt.Fprintf(os.Stderr, "kvmfleet-verify: --customer-pubkey must be exactly 64 hex chars (32 bytes); got %q\n", customerPubHex)
+			os.Exit(1)
+		}
+		customerPubkey = ed25519.PublicKey(pk)
+	}
+
 	var r io.Reader = os.Stdin
 	if input != "" {
 		f, err := os.Open(input)
@@ -136,6 +165,56 @@ func main() {
 			fmt.Fprintln(os.Stderr, "  - The anchor value was mis-copied (re-fetch from SIEM).")
 			os.Exit(1)
 		}
+	}
+
+	// Customer-signed anchor mode. Strongest available proof: every
+	// anchor must (a) verify against the customer's pubkey, and (b)
+	// reference a chain head that appeared in the walk. A platform-
+	// side attacker can satisfy (a) only with the customer's private
+	// key (they don't have it); they can satisfy (b) only by leaving
+	// the historical chain heads intact (any rewrite breaks this).
+	if signedAnchors != "" {
+		f, err := os.Open(signedAnchors)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "kvmfleet-verify: open %s: %v\n", signedAnchors, err)
+			os.Exit(1)
+		}
+		anchors, err := ParseSignedAnchors(f)
+		_ = f.Close()
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "kvmfleet-verify: parse signed-anchors file: %v\n", err)
+			os.Exit(1)
+		}
+		if len(anchors) == 0 {
+			fmt.Fprintln(os.Stderr, "kvmfleet-verify: --signed-anchors file contained zero entries")
+			os.Exit(1)
+		}
+		sres := VerifySignedAnchors(anchors, customerPubkey, res.WalkedHeads)
+		if sres.HasAnyFailures() {
+			fmt.Fprintln(os.Stderr, "SIGNATURE / ANCHOR FAILURES:")
+			for _, msg := range sres.SignatureFailures {
+				fmt.Fprintln(os.Stderr, "  ✗ "+msg)
+			}
+			for _, msg := range sres.ChainHeadNotInWalk {
+				fmt.Fprintln(os.Stderr, "  ✗ "+msg)
+			}
+			fmt.Fprintln(os.Stderr, "")
+			fmt.Fprintln(os.Stderr, "Either the chain has been rewritten since the customer signed these")
+			fmt.Fprintln(os.Stderr, "anchors, or the customer-pubkey doesn't match the key that signed them.")
+			os.Exit(1)
+		}
+		if !quiet {
+			fmt.Printf("OK %d event(s)\n", res.Checked)
+			fmt.Printf("chain head: %s\n", res.ChainHead)
+			if expectedHex != "" {
+				fmt.Println("anchor matches: VERIFIED")
+			}
+			fmt.Printf("customer signatures: %d/%d VERIFIED\n", sres.TotalAnchors, sres.TotalAnchors)
+		}
+		return
+	}
+
+	if expectedHex != "" {
 		if !quiet {
 			fmt.Printf("OK %d event(s)\n", res.Checked)
 			fmt.Printf("chain head: %s\n", res.ChainHead)
