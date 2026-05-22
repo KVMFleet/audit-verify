@@ -153,7 +153,50 @@ existing signature is now locked in — rewriting the chain to a state
 that doesn't include that head will fail the second check.
 
 This is the strongest cryptographic guarantee `kvmfleet-verify`
-provides today.
+provides today against a fully-compromised platform.
+
+## Third-party witness countersignatures (`--witness-pubkey`)
+
+Customer-signed anchors require the customer to operate a signer.
+Some customers prefer (or additionally want) third-party witnesses:
+an external party countersigns every chain anchor, and the verifier
+re-checks the countersignatures against the witnesses' public keys.
+
+The platform allows each org to configure 0–N witness endpoints
+(Compliance → Witness endpoints). For each configured endpoint, the
+platform POSTs every chain anchor in parallel; the witness response
+(entry id, witness timestamp, optional Ed25519 signature) is embedded
+inside the `audit.chain.anchor` audit event under
+`details.witness_responses`.
+
+To verify those signatures offline:
+
+```bash
+kvmfleet-verify \
+  --input audit.ndjson \
+  --witness-pubkey primary:<64-hex-pubkey> \
+  --witness-pubkey backup:<64-hex-pubkey>
+```
+
+`--witness-pubkey` can be passed once per witness. The names must
+match what the platform stored in `witness_responses`. The verifier:
+
+- Walks the chain (`prev_hash → row_hash` recompute, as before).
+- Extracts every `details.witness_responses[*]` entry from the
+  `audit.chain.anchor` events.
+- For every entry whose `name` matches a `--witness-pubkey`, verifies
+  the Ed25519 signature is over `chain_head_bytes ||
+  witness_timestamp.utf8`.
+- Asserts every signed anchor's `chain_head_at_anchor` appears in the
+  walked chain — the same tamper-detection logic as the customer-
+  signed case.
+
+A platform-side attacker can rewrite the chain to a self-consistent
+state but cannot forge new witness signatures (they don't have the
+witnesses' private keys) AND any historical chain head locked in by
+an existing witness signature now fails the "head in walk" check.
+Witness-countersign and customer-sign verify orthogonal claims and
+can be combined in the same invocation.
 
 ## Build
 

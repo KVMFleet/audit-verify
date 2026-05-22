@@ -23,6 +23,7 @@
 package main
 
 import (
+	"bytes"
 	"crypto/ed25519"
 	"encoding/hex"
 	"flag"
@@ -32,17 +33,29 @@ import (
 	"strings"
 )
 
-const version = "0.3.0-dev"
+const version = "0.4.0-dev"
+
+// repeatableStringFlag implements flag.Value for flags the user can
+// pass more than once. Used by --witness-pubkey to collect multiple
+// name:hex pairs.
+type repeatableStringFlag []string
+
+func (r *repeatableStringFlag) String() string { return strings.Join(*r, ",") }
+func (r *repeatableStringFlag) Set(v string) error {
+	*r = append(*r, v)
+	return nil
+}
 
 func main() {
 	var (
-		input           string
-		anchorHex       string
-		expectedHex     string
-		signedAnchors   string
-		customerPubHex  string
-		quiet           bool
-		showVer         bool
+		input          string
+		anchorHex      string
+		expectedHex    string
+		signedAnchors  string
+		customerPubHex string
+		witnessPubkeys repeatableStringFlag
+		quiet          bool
+		showVer        bool
 	)
 	flag.StringVar(&input, "input", "", "Path to NDJSON export (default: stdin)")
 	flag.StringVar(&anchorHex, "anchor", "", "Org's audit_chain_anchor as 64 hex chars (default: 64 zeros)")
@@ -61,6 +74,12 @@ func main() {
 	flag.StringVar(&customerPubHex, "customer-pubkey", "",
 		"Customer's Ed25519 public key as 64 hex chars (32 raw bytes).\n"+
 			"\tThe other half of --signed-anchors; required when that's set.")
+	flag.Var(&witnessPubkeys, "witness-pubkey",
+		"Verify a witness's countersignature on every chain anchor.\n"+
+			"\tFormat: <witness-name>:<64-hex-pubkey>. Pass once per\n"+
+			"\twitness; the names must match the names the platform's\n"+
+			"\twitness_responses array uses. Anchors whose chain head\n"+
+			"\tnever appeared in the walk fail the check.")
 	flag.BoolVar(&quiet, "quiet", false, "Suppress success output; only print on failure")
 	flag.BoolVar(&showVer, "version", false, "Print version and exit")
 	flag.Usage = func() {
@@ -123,6 +142,12 @@ func main() {
 		customerPubkey = ed25519.PublicKey(pk)
 	}
 
+	witnessKeys, err := ParseWitnessKeyFlag(witnessPubkeys)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "kvmfleet-verify: %v\n", err)
+		os.Exit(1)
+	}
+
 	var r io.Reader = os.Stdin
 	if input != "" {
 		f, err := os.Open(input)
@@ -132,6 +157,20 @@ func main() {
 		}
 		defer f.Close()
 		r = f
+	}
+
+	// If we need to do witness-signature verification, we'll need a
+	// second pass over the input to extract anchor events from the
+	// already-walked stream. Buffer in that case so the second pass
+	// works for stdin pipelines too.
+	var buffered []byte
+	if len(witnessKeys) > 0 {
+		buffered, err = io.ReadAll(r)
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "kvmfleet-verify: read input: %v\n", err)
+			os.Exit(1)
+		}
+		r = bytes.NewReader(buffered)
 	}
 
 	res, err := Verify(r, anchor)
@@ -210,6 +249,47 @@ func main() {
 				fmt.Println("anchor matches: VERIFIED")
 			}
 			fmt.Printf("customer signatures: %d/%d VERIFIED\n", sres.TotalAnchors, sres.TotalAnchors)
+		}
+		return
+	}
+
+	// Witness-signature mode. Same threat-closure as customer-signed
+	// anchors above but with third-party (witness-operated) keys
+	// instead of customer-operated ones. Both can run in the same
+	// invocation; they verify orthogonal claims.
+	if len(witnessKeys) > 0 {
+		responses, err := ExtractAnchorWitnessResponses(bytes.NewReader(buffered))
+		if err != nil {
+			fmt.Fprintf(os.Stderr, "kvmfleet-verify: extract anchor witness responses: %v\n", err)
+			os.Exit(1)
+		}
+		wres := VerifyWitnessSignatures(responses, witnessKeys, res.WalkedHeads)
+		if wres.HasAnyFailures() {
+			fmt.Fprintln(os.Stderr, "WITNESS FAILURES:")
+			for _, msg := range wres.ChainHeadNotInWalk {
+				fmt.Fprintln(os.Stderr, "  ✗ "+msg)
+			}
+			for _, p := range wres.PerWitness {
+				for _, msg := range p.Failures {
+					fmt.Fprintln(os.Stderr, "  ✗ "+msg)
+				}
+			}
+			fmt.Fprintln(os.Stderr, "")
+			fmt.Fprintln(os.Stderr, "Either the chain has been rewritten since the witness countersigned")
+			fmt.Fprintln(os.Stderr, "these anchors, or one of the --witness-pubkey values is wrong.")
+			os.Exit(1)
+		}
+		if !quiet {
+			fmt.Printf("OK %d event(s)\n", res.Checked)
+			fmt.Printf("chain head: %s\n", res.ChainHead)
+			if expectedHex != "" {
+				fmt.Println("anchor matches: VERIFIED")
+			}
+			fmt.Printf("witness anchors: %d, witnesses checked: %d\n",
+				wres.TotalAnchors, len(wres.PerWitness))
+			for name, p := range wres.PerWitness {
+				fmt.Printf("  %s: %d/%d VERIFIED\n", name, p.Verified, p.Checked)
+			}
 		}
 		return
 	}
