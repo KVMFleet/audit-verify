@@ -33,7 +33,7 @@ import (
 	"strings"
 )
 
-const version = "0.4.0-dev"
+const version = "0.5.0-dev"
 
 // repeatableStringFlag implements flag.Value for flags the user can
 // pass more than once. Used by --witness-pubkey to collect multiple
@@ -54,6 +54,8 @@ func main() {
 		signedAnchors  string
 		customerPubHex string
 		witnessPubkeys repeatableStringFlag
+		filteredInput  string
+		proofFile      string
 		quiet          bool
 		showVer        bool
 	)
@@ -74,6 +76,16 @@ func main() {
 	flag.StringVar(&customerPubHex, "customer-pubkey", "",
 		"Customer's Ed25519 public key as 64 hex chars (32 raw bytes).\n"+
 			"\tThe other half of --signed-anchors; required when that's set.")
+	flag.StringVar(&filteredInput, "filtered", "",
+		"Path to a filtered NDJSON export from POST /v1/audit/inclusion-proof.\n"+
+			"\tMutually exclusive with --input. Use with --proof to verify the\n"+
+			"\tincluded rows belong to the org's master audit history without\n"+
+			"\tdisclosing the rest of the log.")
+	flag.StringVar(&proofFile, "proof", "",
+		"Path to the .proof file emitted alongside a --filtered export.\n"+
+			"\tContains per-epoch Merkle roots + per-event audit paths. The\n"+
+			"\tverifier rejects if any path fails to reconstruct its root, or\n"+
+			"\tif any row's recomputed row_hash differs from the claimed value.")
 	flag.Var(&witnessPubkeys, "witness-pubkey",
 		"Verify a witness's countersignature on every chain anchor.\n"+
 			"\tFormat: <witness-name>:<64-hex-pubkey>. Pass once per\n"+
@@ -146,6 +158,26 @@ func main() {
 	if err != nil {
 		fmt.Fprintf(os.Stderr, "kvmfleet-verify: %v\n", err)
 		os.Exit(1)
+	}
+
+	// --filtered mode: short-circuit. Doesn't walk the chain (the
+	// filtered file is by definition a strict subset, so the chain
+	// wouldn't continue). Instead verifies per-row row_hash and the
+	// per-row Merkle inclusion proofs against the recorded epoch
+	// roots. The customer authenticates the roots themselves via
+	// --check-against-anchor / --signed-anchors / --witness-pubkey
+	// modes on the FULL chain export, in a separate run.
+	if filteredInput != "" || proofFile != "" {
+		if filteredInput == "" || proofFile == "" {
+			fmt.Fprintln(os.Stderr, "kvmfleet-verify: --filtered and --proof must be used together")
+			os.Exit(1)
+		}
+		if input != "" || anchorHex != "" || expectedHex != "" || signedAnchors != "" || len(witnessKeys) > 0 {
+			fmt.Fprintln(os.Stderr, "kvmfleet-verify: --filtered/--proof is incompatible with --input/--anchor/--check-against-anchor/--signed-anchors/--witness-pubkey")
+			os.Exit(1)
+		}
+		runFilteredVerification(filteredInput, proofFile, quiet)
+		return
 	}
 
 	var r io.Reader = os.Stdin
@@ -307,6 +339,50 @@ func main() {
 		fmt.Printf("OK %d event(s)\n", res.Checked)
 		if res.ChainHead != "" {
 			fmt.Printf("chain head: %s\n", res.ChainHead)
+		}
+	}
+}
+
+func runFilteredVerification(filteredPath, proofPath string, quiet bool) {
+	// We intentionally don't use the filtered NDJSON to drive the
+	// verify loop — the proof file carries the full event payload it
+	// needs in its `events` array. We could load filtered for cross-
+	// check; v1 keeps it simple and lets the operator inspect the
+	// NDJSON themselves.
+	f, err := os.Open(proofPath)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "kvmfleet-verify: open %s: %v\n", proofPath, err)
+		os.Exit(1)
+	}
+	defer f.Close()
+	p, err := ParseProofFile(f)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "kvmfleet-verify: %v\n", err)
+		os.Exit(1)
+	}
+	if len(p.Proofs) == 0 && len(p.NotCoveredEventID) == 0 {
+		fmt.Fprintln(os.Stderr, "kvmfleet-verify: proof file contained zero entries")
+		os.Exit(1)
+	}
+	res := VerifyInclusionProofs(p)
+	if res.HasAnyFailures() {
+		fmt.Fprintln(os.Stderr, "INCLUSION-PROOF FAILURES:")
+		for _, msg := range res.Failures {
+			fmt.Fprintln(os.Stderr, "  ✗ "+msg)
+		}
+		fmt.Fprintln(os.Stderr, "")
+		fmt.Fprintln(os.Stderr, "The filtered events are NOT cryptographically committed to the org's")
+		fmt.Fprintln(os.Stderr, "audit-chain Merkle epoch as claimed. Either the proof file was altered,")
+		fmt.Fprintln(os.Stderr, "the events were altered, or the platform produced an invalid proof.")
+		os.Exit(1)
+	}
+	if !quiet {
+		fmt.Printf("OK %d event(s) proved inclusion in %d epoch(s)\n",
+			res.VerifiedEvents, len(p.Proofs))
+		if len(p.NotCoveredEventID) > 0 {
+			fmt.Printf("note: %d event(s) in the filter NOT covered by any Merkle epoch\n",
+				len(p.NotCoveredEventID))
+			fmt.Println("      (likely in an unbuilt epoch — re-export after the builder catches up)")
 		}
 	}
 }
