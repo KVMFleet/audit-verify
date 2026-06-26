@@ -41,12 +41,13 @@ machine for a compliance auditor, this is the tool.
    chain head: a1b2c3...
    ```
 
-   On break (tampering, deletion, or reordering detected):
+   On break (tampering, reordering, or deletion of an interior row):
    ```
    BREAK: row_hash mismatch at id=433 (expected ..., got ...)
    checked 433 event(s) before break
    ```
-   Exit code 1 on break; 0 on success.
+   Exit code 1 on break; 0 on success. An export with zero events also
+   exits 1 — an empty file is internally consistent but proves nothing.
 
 ## What the verifier proves
 
@@ -64,6 +65,13 @@ content or whose `prev_hash` doesn't match the prior row.
   verifier checks integrity of what's in the export, not completeness.
 - That a forward-looking event hasn't yet been added; the verifier
   walks what you give it.
+- **That the tail wasn't truncated.** A bare walk verifies the rows you
+  give it are a self-consistent chain — but lopping off the most recent
+  rows leaves a shorter chain that *also* verifies. Detecting a dropped
+  tail (or a platform-side rewrite-from-anchor) requires an external
+  commitment the attacker can't reach: `--check-against-anchor`,
+  `--signed-anchors`, or `--witness-pubkey` (below). A bare `OK` run
+  prints a one-line reminder of this on stderr.
 
 ## External-witness mode: catching a platform-side rewrite
 

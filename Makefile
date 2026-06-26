@@ -1,4 +1,4 @@
-.PHONY: build test fmt vet clean
+.PHONY: build wasm test fmt vet clean
 
 VERSION ?= $(shell git describe --tags --always --dirty 2>/dev/null || echo dev)
 
@@ -21,6 +21,16 @@ build:
 	GOOS=windows GOARCH=amd64 $(BUILDER) \
 	  'go build -trimpath -buildvcs=false -ldflags="-s -w -X main.version=$(VERSION)" -o /out/kvmfleet-verify.windows-amd64.exe .'
 	@echo "built ./bin/kvmfleet-verify.*  ($(VERSION))"
+
+# Compile the verifier to WebAssembly for the in-browser /security demo
+# (#379). Same throwaway golang container; emits the .wasm plus the
+# version-matched wasm_exec.js glue into ./bin. No host Go required.
+wasm:
+	mkdir -p bin
+	GOOS=js GOARCH=wasm $(BUILDER) \
+	  'go build -trimpath -buildvcs=false -ldflags="-s -w -X main.version=$(VERSION)" -o /out/kvmfleet-verify.wasm . \
+	   && cp "$$(go env GOROOT)/lib/wasm/wasm_exec.js" /out/wasm_exec.js'
+	@echo "built ./bin/kvmfleet-verify.wasm + ./bin/wasm_exec.js  ($(VERSION))"
 
 test:
 	docker run --rm -v $(PWD):/src -w /src golang:1.24-alpine \

@@ -1,9 +1,21 @@
+//go:build !js
+
 // kvmfleet-verify — offline verifier for the KVM Fleet audit chain.
 //
 // Walks an NDJSON export of audit events from `/v1/audit/events.ndjson`
-// and recomputes the SHA-256 hash chain row-by-row. Detects tampering,
-// reordering, or deletion of audit events without requiring network
-// access to the platform.
+// and recomputes the SHA-256 hash chain row-by-row, without requiring
+// network access to the platform.
+//
+// What the bare walk detects on its own: any tampering with a row's
+// content, reordering, and deletion of an INTERIOR row — each breaks
+// prev_hash continuity or a recomputed row_hash.
+//
+// What the bare walk CANNOT detect on its own: truncation of the most
+// recent rows (the remaining prefix is still self-consistent) or a
+// platform-side rewrite from some anchor forward. Catching those needs
+// an external commitment the attacker can't reach: --check-against-anchor
+// (a chain head your SIEM archived), --signed-anchors (customer-key
+// signatures), or --witness-pubkey (third-party countersignatures).
 //
 // Usage:
 //
@@ -217,6 +229,16 @@ func main() {
 		os.Exit(1)
 	}
 
+	// A zero-event input walks "successfully" but attests to nothing. Reject
+	// it rather than print a green "OK 0 events" a reader could mistake for a
+	// meaningful verification — consistent with the --filtered/--signed-anchors
+	// zero-entry guards below.
+	if vacuousVerification(res.Checked) {
+		fmt.Fprintln(os.Stderr, "kvmfleet-verify: input contained zero audit events — nothing was verified.")
+		fmt.Fprintln(os.Stderr, "  (Export the NDJSON via Audit → Export → NDJSON; an empty file proves nothing.)")
+		os.Exit(1)
+	}
+
 	// External-witness check. The chain itself verified — but does the
 	// final head match the value the customer archived from their SIEM?
 	// A platform-side attacker can rewrite the chain to a self-consistent
@@ -340,7 +362,34 @@ func main() {
 		if res.ChainHead != "" {
 			fmt.Printf("chain head: %s\n", res.ChainHead)
 		}
+		// Honest caveat: a bare walk proves the export is internally
+		// self-consistent, NOT that it's the authentic, untruncated history.
+		// Point the operator at the external-commitment modes.
+		if bareModeIsInternalOnly(expectedHex != "", signedAnchors != "", len(witnessKeys) > 0) {
+			fmt.Fprintln(os.Stderr, "note: this proves the export is internally consistent, not that it is")
+			fmt.Fprintln(os.Stderr, "      complete or untruncated. To catch a platform-side rewrite or a")
+			fmt.Fprintln(os.Stderr, "      dropped tail, re-run with --check-against-anchor, --signed-anchors,")
+			fmt.Fprintln(os.Stderr, "      or --witness-pubkey (see --help).")
+		}
 	}
+}
+
+// vacuousVerification reports whether a successful Verify result actually
+// attests to anything. A zero-event input is internally consistent (an empty
+// chain trivially is) but proves nothing — the CLI must not present it as a
+// clean verification, mirroring the zero-entry guards in --filtered and
+// --signed-anchors mode. Verify() itself keeps returning OK for empty input;
+// the human-facing judgment lives here in the CLI layer.
+func vacuousVerification(checked int) bool {
+	return checked == 0
+}
+
+// bareModeIsInternalOnly reports whether a run proved internal consistency
+// ONLY — i.e. no external commitment (archived anchor / signed anchor /
+// witness key) was supplied to catch a tail-truncation or platform-side
+// rewrite. Used to print an honest caveat after a bare "OK".
+func bareModeIsInternalOnly(hasExpectedAnchor, hasSignedAnchors, hasWitnessKeys bool) bool {
+	return !hasExpectedAnchor && !hasSignedAnchors && !hasWitnessKeys
 }
 
 func runFilteredVerification(filteredPath, proofPath string, quiet bool) {

@@ -1,0 +1,168 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://kvmfleet.io/schemas/compliance-report/v1.json",
+  "title": "KVM Fleet compliance report (v3 renderer, schema v1)",
+  "description": "Machine-readable projection of a KVM Fleet compliance evidence report. Emitted by the JSON render surface (services/report_surfaces.py) and ingestible by a generic GRC custom connection (e.g. Drata Custom Connections, Vanta API) or a SIEM collector. Control identifiers use framework-native / OSCAL-style string ids; this is NOT an OSCAL document. Versioned per SchemaVer (MODEL-REVISION-ADDITION): adding an optional field is an ADDITION; a breaking change ships a new $id. The reserved optional groups (trend, inclusion_proofs, share, branding, lang) are present-as-null until slices 2-4 populate them, so those slices stay additive.",
+  "type": "object",
+  "required": [
+    "$schema",
+    "schema_version",
+    "report_id",
+    "generated_at",
+    "framework",
+    "organisation",
+    "period",
+    "coverage",
+    "controls",
+    "integrity"
+  ],
+  "properties": {
+    "$schema": { "type": "string", "const": "https://kvmfleet.io/schemas/compliance-report/v1.json" },
+    "schema_version": { "type": "string", "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$" },
+    "report_id": { "type": "string" },
+    "generated_at": { "type": "string", "description": "UTC, formatted 'YYYY-MM-DD HH:MM UTC'." },
+    "framework": {
+      "type": "object",
+      "required": ["id", "name"],
+      "properties": { "id": { "type": "string" }, "name": { "type": "string" } }
+    },
+    "organisation": {
+      "type": "object",
+      "required": ["name", "slug"],
+      "properties": { "name": { "type": "string" }, "slug": { "type": "string" } }
+    },
+    "period": {
+      "type": "object",
+      "required": ["from", "to"],
+      "properties": {
+        "from": { "type": "string", "format": "date" },
+        "to": { "type": "string", "format": "date" }
+      }
+    },
+    "intro": { "type": "string" },
+    "disclaimer": { "type": "string" },
+    "coverage": {
+      "type": "object",
+      "required": ["covered", "partial", "not_covered", "not_applicable", "total", "assessable"],
+      "properties": {
+        "covered": { "type": "integer", "minimum": 0 },
+        "partial": { "type": "integer", "minimum": 0 },
+        "not_covered": { "type": "integer", "minimum": 0 },
+        "not_applicable": { "type": "integer", "minimum": 0 },
+        "total": { "type": "integer", "minimum": 0 },
+        "assessable": { "type": "integer", "minimum": 0 }
+      }
+    },
+    "metrics": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["label", "value"],
+        "properties": { "label": { "type": "string" }, "value": { "type": "string" } }
+      }
+    },
+    "findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["severity", "control_id", "control_title", "detail"],
+        "properties": {
+          "severity": { "type": "string", "enum": ["critical", "high", "medium", "low"] },
+          "control_id": { "type": "string" },
+          "control_title": { "type": "string" },
+          "detail": { "type": "string" },
+          "remediation": { "$ref": "#/$defs/remediation" }
+        }
+      }
+    },
+    "controls": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "title", "status", "evidence", "status_detail"],
+        "properties": {
+          "id": { "type": "string" },
+          "title": { "type": "string" },
+          "evidence": { "type": "string" },
+          "status": { "type": "string", "enum": ["covered", "partial", "not_covered", "not_applicable"] },
+          "status_detail": { "type": "string" },
+          "note": { "type": "string" },
+          "remediation": { "$ref": "#/$defs/remediation" }
+        }
+      }
+    },
+    "extra_sections": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["title", "blocks"],
+        "properties": {
+          "title": { "type": "string" },
+          "blocks": {
+            "type": "array",
+            "items": {
+              "type": "object",
+              "required": ["kind"],
+              "properties": { "kind": { "type": "string", "enum": ["para", "heading", "bullets", "table"] } }
+            }
+          }
+        }
+      }
+    },
+    "access_control": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["email", "role", "auth_provider", "totp_enabled"],
+        "properties": {
+          "email": { "type": "string" },
+          "role": { "type": "string" },
+          "auth_provider": { "type": "string" },
+          "totp_enabled": { "type": "boolean" }
+        }
+      }
+    },
+    "integrity": {
+      "type": "object",
+      "required": ["chain_ok", "events_checked", "chain_head", "chain_anchor"],
+      "properties": {
+        "chain_ok": { "type": "boolean" },
+        "first_break_id": { "type": ["integer", "null"] },
+        "events_checked": { "type": "integer", "minimum": 0 },
+        "chain_head": { "type": "string", "description": "Hex of the last event row_hash in period; empty when no events." },
+        "chain_anchor": { "type": "string", "description": "Hex of the per-org chain anchor." }
+      }
+    },
+
+    "trend": {
+      "description": "RESERVED (#314): per-control multi-quarter status history. Null until populated; adding it later is a SchemaVer ADDITION.",
+      "type": ["object", "null"]
+    },
+    "inclusion_proofs": {
+      "description": "RESERVED (#315): per-finding Merkle inclusion-proof URLs + post-quantum footnote. Null until populated.",
+      "type": ["object", "null"]
+    },
+    "share": {
+      "description": "RESERVED (#318): auditor share-link metadata (share_token, viewer[], access[], ip_allowlist[]). Null until populated.",
+      "type": ["object", "null"]
+    },
+    "branding": {
+      "description": "RESERVED (#319): MSP cover-letter branding (msp_name, msp_logo_url). Null until populated.",
+      "type": ["object", "null"]
+    },
+    "lang": {
+      "description": "RESERVED (Research v2 Q7): report language code (e.g. 'en', 'de'). Null until localisation ships.",
+      "type": ["string", "null"]
+    }
+  },
+  "$defs": {
+    "remediation": {
+      "type": ["object", "null"],
+      "required": ["text"],
+      "properties": {
+        "text": { "type": "string" },
+        "url": { "type": ["string", "null"] }
+      }
+    }
+  }
+}
